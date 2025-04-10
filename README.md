@@ -2,10 +2,6 @@
 
 Extract questions and answers from Quizizz quizzes and export them to Word documents.
 
-<p align="center">
-  <img src="https://quizizz.com/wf/assets/62fa71f622b3647729334a43_Brand%20Symbol%20-%20Quizizz.svg" alt="Quizizz Logo" width="150">
-</p>
-
 ## 📋 Features
 
 - Extract all questions from a Quizizz game
