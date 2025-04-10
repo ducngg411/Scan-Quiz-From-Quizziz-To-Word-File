@@ -1,4 +1,4 @@
-// Quizizz Scraper - Thu thập câu hỏi và đáp án
+// Quizizz Scraper - Thu thập câu hỏi và đáp án và xuất ra Word
 // Sử dụng Node.js với các thư viện puppeteer và docx
 
 const puppeteer = require('puppeteer');
@@ -6,11 +6,12 @@ const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx');
 const fs = require('fs');
 
 class QuizizzScraper {
-  constructor() {
+  constructor(options = {}) {
     this.browser = null;
     this.page = null;
     this.quizTimeout = null;
-    this.maxQuizDuration = 15 * 60 * 1000; // 15 phút tối đa
+    this.maxQuizDuration = options.maxDuration || 15 * 60 * 1000; // 15 phút tối đa
+    this.headless = options.headless !== undefined ? options.headless : false;
     this.quizData = {
       title: '',
       questions: []
@@ -20,7 +21,7 @@ class QuizizzScraper {
   async initialize() {
     console.log('Khởi tạo trình duyệt...');
     this.browser = await puppeteer.launch({
-      headless: false, // Đặt true để chạy ngầm
+      headless: this.headless,
       defaultViewport: null,
       args: ['--start-maximized']
     });
@@ -521,7 +522,7 @@ class QuizizzScraper {
     }
   }
   
-  // Thêm phương thức mới để thiết lập timeout tự động
+  // Thiết lập timeout tự động
   startQuizTimeout() {
     // Xóa timeout cũ nếu có
     if (this.quizTimeout) {
@@ -546,6 +547,346 @@ class QuizizzScraper {
     }, this.maxQuizDuration);
   }
 
+  // Tạo file text tạm thời từ dữ liệu thu thập được
+  async createTempTextFile() {
+    try {
+      console.log('Tạo file text tạm thời từ dữ liệu...');
+      let textContent = `${this.quizData.title || 'Quizizz Quiz'}\n\n`;
+      
+      for (const question of this.quizData.questions) {
+        let questionText = question.questionText;
+        const questionNumberMatch = questionText.match(/^Câu \d+:/);
+        if (questionNumberMatch) {
+          questionText = questionText.replace(questionNumberMatch[0], '').trim();
+        }
+        
+        textContent += `Câu ${question.questionNumber}: ${questionText}\n\n`;
+        
+        const options = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
+        for (let i = 0; i < question.options.length; i++) {
+          const option = question.options[i];
+          const optionLetter = i < options.length ? options[i] : `Lựa chọn ${i+1}`;
+          const isCorrect = option === question.correctAnswer;
+          
+          if (isCorrect) {
+            textContent += `${optionLetter}. ${option} (ĐÁP ÁN ĐÚNG)\n`;
+          } else {
+            textContent += `${optionLetter}. ${option}\n`;
+          }
+        }
+        
+        textContent += '\n';
+      }
+      
+      const tempFilename = `quizizz_temp_${Date.now()}.txt`;
+      fs.writeFileSync(tempFilename, textContent);
+      console.log(`Đã tạo file text tạm thời: ${tempFilename}`);
+      return tempFilename;
+    } catch (error) {
+      console.error('Lỗi khi tạo file text tạm thời:', error);
+      return null;
+    }
+  }
+
+  // Chuyển đổi từ text sang Word với định dạng đẹp
+  async convertTextToWord(inputFile, outputFile) {
+    try {
+      console.log(`Đang chuyển đổi từ ${inputFile} sang ${outputFile}...`);
+      const content = fs.readFileSync(inputFile, 'utf8');
+      
+      // Phân tích nội dung file text
+      const lines = content.split('\n');
+      let title = 'Quizizz Quiz';
+      
+      // Lấy tiêu đề từ dòng đầu tiên
+      if (lines.length > 0) {
+        title = lines[0].trim();
+      }
+      
+      // Tạo mảng chứa tất cả paragraphs
+      const children = [];
+      
+      // Thêm tiêu đề với font Times New Roman, size 14, bold
+      children.push(
+        new Paragraph({
+          children: [
+            new TextRun({
+              text: title,
+              bold: true,
+              size: 28, // 14pt = 28 half-points
+              font: "Times New Roman"
+            })
+          ],
+          heading: HeadingLevel.HEADING_1
+        })
+      );
+      
+      // Biến để theo dõi vị trí hiện tại
+      let currentQuestion = '';
+      let inQuestion = false;
+      
+      // Xử lý từng dòng
+      for (let i = 1; i < lines.length; i++) {
+        const line = lines[i].trim();
+        
+        // Bỏ qua dòng trống
+        if (line === '') {
+          children.push(new Paragraph({}));
+          continue;
+        }
+        
+        // Kiểm tra nếu dòng bắt đầu bằng "Câu X:"
+        if (line.match(/^Câu \d+:/)) {
+          inQuestion = true;
+          currentQuestion = line;
+          
+          // Thêm tiêu đề câu hỏi với font Times New Roman, size 12
+          children.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: currentQuestion,
+                  bold: true,
+                  size: 28, // 12pt = 24 half-points
+                  color: "000000",
+                  font: "Times New Roman"
+                })
+              ],
+              heading: HeadingLevel.HEADING_2
+            })
+          );
+          
+          // Thêm dòng trống sau câu hỏi
+          children.push(new Paragraph({}));
+        } 
+        // Kiểm tra nếu dòng là đáp án
+        else if (inQuestion && line.match(/^[A-H]\./)) {
+          const isCorrect = line.includes('(ĐÁP ÁN ĐÚNG)');
+          
+          // Loại bỏ phần "(ĐÁP ÁN ĐÚNG)" nếu có
+          let cleanLine = line;
+          if (isCorrect) {
+            cleanLine = line.replace('(ĐÁP ÁN ĐÚNG)', '').trim();
+          }
+          
+          // Thêm đáp án vào document với font Times New Roman, size 12
+          children.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: cleanLine,
+                  bold: isCorrect,
+                  highlight: isCorrect ? 'yellow' : undefined,
+                  size: 28, // 12pt = 24 half-points
+                  font: "Times New Roman"
+                })
+              ]
+            })
+          );
+        }
+        // Dòng khác
+        else if (inQuestion) {
+          children.push(
+            new Paragraph({
+              children: [
+                new TextRun({
+                  text: line,
+                  size: 28, // 12pt = 24 half-points
+                  font: "Times New Roman"
+                })
+              ]
+            })
+          );
+        }
+      }
+      
+      // Tạo document với cách đơn giản nhất
+      const doc = new Document({
+        features: {
+          updateFields: false
+        },
+        styles: {
+          default: {
+            document: {
+              run: {
+                font: "Times New Roman",
+                size: 28 // 12pt = 24 half-points
+              }
+            },
+            paragraphStyles: [
+              {
+                id: "Heading1",
+                name: "Heading 1",
+                basedOn: "Normal",
+                next: "Normal",
+                run: {
+                  font: "Times New Roman",
+                  size: 28, // 14pt = 28 half-points
+                  bold: true
+                }
+              },
+              {
+                id: "Heading2",
+                name: "Heading 2",
+                basedOn: "Normal",
+                next: "Normal",
+                run: {
+                  font: "Times New Roman",
+                  size: 28, // 12pt = 24 half-points
+                  bold: true
+                }
+              }
+            ]
+          }
+        },
+        sections: [
+          {
+            children: children
+          }
+        ]
+      });
+      
+      // Lưu file Word
+      console.log(`Đang tạo file Word ${outputFile}...`);
+      const buffer = await Packer.toBuffer(doc);
+      fs.writeFileSync(outputFile, buffer);
+      
+      console.log(`Đã chuyển đổi thành công sang file: ${outputFile}`);
+      
+      // Xóa file text tạm thời
+      if (fs.existsSync(inputFile) && inputFile.includes('quizizz_temp_')) {
+        fs.unlinkSync(inputFile);
+        console.log(`Đã xóa file tạm thời: ${inputFile}`);
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Lỗi khi chuyển đổi file:', error);
+      
+      // Thử cách khác - phiên bản đơn giản hơn
+      try {
+        console.log('Thử cách khác: Tạo file Word mới với định dạng đơn giản hơn...');
+        
+        // Phương pháp 2: Sử dụng cách khởi tạo khác
+        const doc2 = new Document();
+        const paragraphs = [];
+        
+        // Phân tích nội dung file text
+        const lines = content.split('\n');
+        
+        // Xử lý từng dòng
+        for (let i = 0; i < lines.length; i++) {
+          const line = lines[i].trim();
+          
+          if (line === '') {
+            paragraphs.push(new Paragraph({}));
+            continue;
+          }
+          
+          // Kiểm tra nếu là tiêu đề (dòng đầu tiên)
+          if (i === 0) {
+            paragraphs.push(
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: line,
+                    bold: true,
+                    size: 28,
+                    font: "Times New Roman"
+                  })
+                ],
+                heading: HeadingLevel.HEADING_1
+              })
+            );
+          }
+          // Kiểm tra nếu là câu hỏi (bắt đầu với "Câu X:")
+          else if (line.match(/^Câu \d+:/)) {
+            paragraphs.push(
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: line,
+                    bold: true,
+                    size: 28,
+                    font: "Times New Roman"
+                  })
+                ],
+                heading: HeadingLevel.HEADING_2
+              })
+            );
+            paragraphs.push(new Paragraph({}));
+          }
+          // Kiểm tra nếu là đáp án đúng
+          else if (line.includes('(ĐÁP ÁN ĐÚNG)')) {
+            const cleanLine = line.replace('(ĐÁP ÁN ĐÚNG)', '').trim();
+            paragraphs.push(
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: cleanLine,
+                    bold: true,
+                    highlight: 'yellow',
+                    size: 28,
+                    font: "Times New Roman"
+                  })
+                ]
+              })
+            );
+          }
+          // Đáp án thường
+          else if (line.match(/^[A-H]\./)) {
+            paragraphs.push(
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: line,
+                    size: 28,
+                    font: "Times New Roman"
+                  })
+                ]
+              })
+            );
+          }
+          // Các dòng khác
+          else {
+            paragraphs.push(
+              new Paragraph({
+                children: [
+                  new TextRun({
+                    text: line,
+                    size: 28,
+                    font: "Times New Roman"
+                  })
+                ]
+              })
+            );
+          }
+        }
+        
+        doc2.addSection({
+          children: paragraphs
+        });
+        
+        const buffer2 = await Packer.toBuffer(doc2);
+        fs.writeFileSync(outputFile, buffer2);
+        
+        console.log(`Đã tạo file Word đơn giản: ${outputFile}`);
+        
+        // Xóa file text tạm thời
+        if (fs.existsSync(inputFile) && inputFile.includes('quizizz_temp_')) {
+          fs.unlinkSync(inputFile);
+          console.log(`Đã xóa file tạm thời: ${inputFile}`);
+        }
+        
+        return true;
+      } catch (error2) {
+        console.error('Lỗi khi thử phương pháp thay thế:', error2);
+        return false;
+      }
+    }
+  }
+
+  // Xuất dữ liệu sang file Word
   async exportToWord() {
     console.log('Xuất dữ liệu ra file Word...');
     
@@ -556,74 +897,23 @@ class QuizizzScraper {
         return;
       }
       
-      // Sử dụng cách đơn giản nhất để tạo document, tránh các lỗi liên quan đến creator
-      const doc = new Document({
-        creator: "Quizizz Scraper",
-        description: "Quizizz Quiz Data",
-        title: this.quizData.title || "Quizizz Quiz"
-      });
+      // Tạo file text tạm thời
+      const tempTextFile = await this.createTempTextFile();
       
-      // Tạo một đoạn với tiêu đề
-      doc.addParagraph(
-        new Paragraph({
-          text: this.quizData.title || 'Quizizz Quiz',
-          heading: HeadingLevel.HEADING_1
-        })
-      );
-      
-      // Thêm các câu hỏi vào document
-      for (const question of this.quizData.questions) {
-        // Tiêu đề câu hỏi - bỏ phần "Câu X:" ở trong nội dung câu hỏi nếu có
-        let questionText = question.questionText;
-        const questionNumberMatch = questionText.match(/^Câu \d+:/);
-        if (questionNumberMatch) {
-          questionText = questionText.replace(questionNumberMatch[0], '').trim();
-        }
-        
-        doc.addParagraph(
-          new Paragraph({
-            text: `Câu ${question.questionNumber}: ${questionText}`,
-            heading: HeadingLevel.HEADING_2
-          })
-        );
-        
-        // Thêm dòng trống sau câu hỏi
-        doc.addParagraph(new Paragraph({}));
-        
-        // Các lựa chọn
-        const options = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
-        for (let i = 0; i < question.options.length; i++) {
-          const option = question.options[i];
-          const optionLetter = i < options.length ? options[i] : `Lựa chọn ${i+1}`;
-          const isCorrect = option === question.correctAnswer;
-          
-          doc.addParagraph(
-            new Paragraph({
-              children: [
-                new TextRun({
-                  text: `${optionLetter}. ${option}`,
-                  bold: isCorrect,
-                  highlight: isCorrect ? 'yellow' : undefined // Bôi vàng đáp án đúng
-                })
-              ]
-            })
-          );
-        }
-        
-        // Khoảng trống
-        doc.addParagraph(new Paragraph({}));
+      if (!tempTextFile) {
+        throw new Error('Không thể tạo file text tạm thời');
       }
       
-      // Tạo buffer và lưu file
-      try {
-        const buffer = await Packer.toBuffer(doc);
-        const filename = `quizizz_${Date.now()}.docx`;
-        
-        fs.writeFileSync(filename, buffer);
-        console.log(`Đã lưu file Word: ${filename}`);
-      } catch (packError) {
-        console.error('Lỗi khi đóng gói file Word:', packError);
-        throw packError; // Ném lỗi để xử lý ở catch bên ngoài
+      // Đặt tên file Word đầu ra
+      const outputFile = tempTextFile.replace('.txt', '.docx');
+      
+      // Chuyển đổi file text sang Word
+      const success = await this.convertTextToWord(tempTextFile, outputFile);
+      
+      if (success) {
+        console.log(`Đã xuất dữ liệu thành công vào file: ${outputFile}`);
+      } else {
+        console.error('Không thể chuyển đổi dữ liệu sang file Word');
       }
     } catch (error) {
       console.error('Lỗi khi xuất file Word:', error);
@@ -676,27 +966,136 @@ class QuizizzScraper {
   }
 }
 
-// Chạy chương trình
-async function run() {
-  const gameCode = process.argv[2] || '';
-  
-  if (!gameCode) {
-    console.error('Vui lòng cung cấp mã game hoặc URL Quizizz!');
-    console.error('Ví dụ: node scraper.js https://quizizz.com/join?gc=40358948');
-    process.exit(1);
-  }
-  
-  const scraper = new QuizizzScraper();
+// Hàm chuyển đổi từ file txt có sẵn sang Word
+async function convertExistingTextToWord(inputFile, outputFile) {
+  console.log(`Chuyển đổi file ${inputFile} có sẵn sang Word...`);
   
   try {
-    await scraper.initialize();
-    await scraper.joinGame(gameCode);
+    // Kiểm tra xem file đầu vào tồn tại không
+    if (!fs.existsSync(inputFile)) {
+      console.error(`Lỗi: File ${inputFile} không tồn tại!`);
+      return false;
+    }
+    
+    // Nếu không chỉ định tên file đầu ra
+    if (!outputFile) {
+      outputFile = inputFile.replace('.txt', '.docx');
+    }
+    
+    // Tạo một instance của QuizizzScraper chỉ để sử dụng phương thức convertTextToWord
+    const converter = new QuizizzScraper();
+    const result = await converter.convertTextToWord(inputFile, outputFile);
+    
+    return result;
   } catch (error) {
-    console.error('Lỗi khi chạy chương trình:', error);
-  } finally {
-    await scraper.close();
+    console.error('Lỗi khi chuyển đổi file text có sẵn:', error);
+    return false;
   }
 }
 
-// Chạy
-run();
+// Hàm main để xử lý tham số dòng lệnh
+async function main() {
+  const args = process.argv.slice(2);
+  
+  if (args.length < 1) {
+    console.log(`
+=========== QUIZIZZ SCRAPER ===========
+Công cụ thu thập câu hỏi và đáp án từ Quizizz
+
+Sử dụng:
+1. Thu thập từ game Quizizz:
+   node quizizz-scraper.js join <mã-game-hoặc-URL>
+   Ví dụ: node quizizz-scraper.js join 12345678
+   Ví dụ: node quizizz-scraper.js join https://quizizz.com/join?gc=12345678
+
+2. Chuyển đổi file text có sẵn sang Word:
+   node quizizz-scraper.js convert <input-file.txt> [output-file.docx]
+   Ví dụ: node quizizz-scraper.js convert quizizz_1234567890.txt
+
+3. Chạy ở chế độ headless (không hiện trình duyệt):
+   node quizizz-scraper.js join <mã-game> --headless
+    
+Các tùy chọn:
+--headless     : Chạy ẩn trình duyệt
+--timeout=<số> : Thời gian tối đa chạy (phút)
+--name=<tên>   : Đặt tên người chơi
+
+Hỗ trợ:
+Tác giả: Tích hợp từ scraper.js và txt-to-word.js
+`);
+    return;
+  }
+  
+  const command = args[0].toLowerCase();
+  
+  // Phân tích các tùy chọn
+  const options = {
+    headless: false,
+    maxDuration: 15 * 60 * 1000, // 15 phút
+    playerName: null
+  };
+  
+  // Xử lý các tùy chọn
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    
+    if (arg === '--headless') {
+      options.headless = true;
+    } else if (arg.startsWith('--timeout=')) {
+      const minutes = parseInt(arg.split('=')[1]);
+      if (!isNaN(minutes) && minutes > 0) {
+        options.maxDuration = minutes * 60 * 1000;
+      }
+    } else if (arg.startsWith('--name=')) {
+      options.playerName = arg.split('=')[1];
+    }
+  }
+  
+  if (command === 'join') {
+    // Thu thập từ game Quizizz
+    if (args.length < 2) {
+      console.error('Thiếu mã game hoặc URL!');
+      console.error('Sử dụng: node quizizz-scraper.js join <mã-game-hoặc-URL>');
+      return;
+    }
+    
+    const gameCode = args[1];
+    
+    try {
+      const scraper = new QuizizzScraper({
+        headless: options.headless,
+        maxDuration: options.maxDuration
+      });
+      
+      await scraper.initialize();
+      await scraper.joinGame(gameCode, options.playerName);
+      await scraper.close();
+    } catch (error) {
+      console.error('Lỗi khi chạy chương trình:', error);
+    }
+  } else if (command === 'convert') {
+    // Chuyển đổi file text có sẵn sang Word
+    if (args.length < 2) {
+      console.error('Thiếu tên file đầu vào!');
+      console.error('Sử dụng: node quizizz-scraper.js convert <input-file.txt> [output-file.docx]');
+      return;
+    }
+    
+    const inputFile = args[1];
+    let outputFile = args.length >= 3 ? args[2] : inputFile.replace('.txt', '.docx');
+    
+    const result = await convertExistingTextToWord(inputFile, outputFile);
+    
+    if (result) {
+      console.log('Quá trình chuyển đổi hoàn tất.');
+    } else {
+      console.error('Lỗi trong quá trình chuyển đổi.');
+    }
+  } else {
+    console.error(`Lệnh không hợp lệ: ${command}`);
+    console.error('Sử dụng: node quizizz-scraper.js join <mã-game> hoặc node quizizz-scraper.js convert <input-file.txt>');
+  }
+}
+
+// Chạy chương trình
+main();
